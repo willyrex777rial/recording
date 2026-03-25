@@ -39,39 +39,43 @@ async def websocket_endpoint(websocket: WebSocket):
 
     try:
         while True:
-            # Receive raw float32 PCM data
-            data = await websocket.receive_bytes()
+            try:
+                # Receive raw float32 PCM data with a timeout to keep the connection alive
+                data = await asyncio.wait_for(websocket.receive_bytes(), timeout=5.0)
 
-            if len(data) == 0:
-                continue
+                if len(data) == 0:
+                    continue
 
-            # Convert bytes to float32 numpy array
-            chunk = np.frombuffer(data, dtype=np.float32)
-            audio_buffer = np.concatenate((audio_buffer, chunk))
+                # Convert bytes to float32 numpy array
+                chunk = np.frombuffer(data, dtype=np.float32)
+                audio_buffer = np.concatenate((audio_buffer, chunk))
 
-            # If we have enough audio, process it
-            if len(audio_buffer) >= SAMPLE_RATE * PROCESS_INTERVAL_SECONDS:
-                # To prevent memory bloat on hours of recording, we keep the buffer capped.
-                # In a true streaming setup with Whisper, we might use VAD to chunk sentences.
-                # Here, we transcribe the current window and clear it (or keep a slight overlap).
+                # If we have enough audio, process it
+                if len(audio_buffer) >= SAMPLE_RATE * PROCESS_INTERVAL_SECONDS:
+                    # Keep a 0.5s overlap for context boundary
+                    overlap_samples = int(SAMPLE_RATE * 0.5)
 
-                # Keep a 0.5s overlap for context boundary
-                overlap_samples = int(SAMPLE_RATE * 0.5)
+                    audio_to_process = audio_buffer.copy()
 
-                audio_to_process = audio_buffer.copy()
+                    # Shift buffer, keeping the overlap for the next round
+                    if len(audio_buffer) > overlap_samples:
+                        audio_buffer = audio_buffer[-overlap_samples:]
+                    else:
+                        audio_buffer = np.array([], dtype=np.float32)
 
-                # Shift buffer, keeping the overlap for the next round
-                if len(audio_buffer) > overlap_samples:
-                    audio_buffer = audio_buffer[-overlap_samples:]
-                else:
-                    audio_buffer = np.array([], dtype=np.float32)
+                    # Run transcription in a thread to not block the event loop
+                    text = await asyncio.to_thread(_transcribe, audio_to_process)
 
-                # Run transcription in a thread to not block the event loop
-                text = await asyncio.to_thread(_transcribe, audio_to_process)
+                    if text:
+                        print(f"Transcribed: {text}")
+                        await websocket.send_json({"text": text, "status": "success"})
+                    else:
+                        # Send empty success to keep client updated that processing happened
+                        await websocket.send_json({"text": "", "status": "success"})
 
-                if text:
-                    print(f"Transcribed: {text}")
-                    await websocket.send_json({"text": text, "status": "success"})
+            except asyncio.TimeoutError:
+                # Send a keepalive ping if no data received
+                await websocket.send_json({"text": "", "status": "keepalive"})
 
     except WebSocketDisconnect:
         print("Client disconnected.")

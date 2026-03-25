@@ -30,6 +30,7 @@ export const useWebSocketTranscription = (getDuration) => {
   const connect = useCallback(() => {
       setStatus('Connecting...');
       wsRef.current = new WebSocket('ws://localhost:8000/ws');
+      wsRef.current.binaryType = 'arraybuffer';
 
       wsRef.current.onopen = () => {
           console.log("WebSocket connected.");
@@ -41,7 +42,15 @@ export const useWebSocketTranscription = (getDuration) => {
           try {
               const data = JSON.parse(event.data);
 
-              if (data.status === 'success' && data.text) {
+              if (data.status === 'keepalive') {
+                  // Connection is alive, waiting for more audio
+                  setStatus('Listening');
+              } else if (data.status === 'success') {
+                  if (!data.text) {
+                      // Processed audio but no speech detected
+                      setStatus('Listening');
+                      return;
+                  }
                   setStatus('Transcribing');
 
                   const currentTime = getDurationRef.current ? getDurationRef.current() : 0;

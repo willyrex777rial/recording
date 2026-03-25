@@ -17,6 +17,7 @@ export const useAudioRecorder = (onRawAudioAvailable) => {
   const audioContextRef = useRef(null);
   const analyserRef = useRef(null);
   const animationFrameRef = useRef(null);
+  const processorRef = useRef(null); // Keep reference to prevent GC
 
   const [visualizerData, setVisualizerData] = useState(new Uint8Array(0));
 
@@ -54,14 +55,16 @@ export const useAudioRecorder = (onRawAudioAvailable) => {
       // which complicates simple local dev. ScriptProcessor is sufficient for this simple app).
       const bufferSize = 4096;
       const processor = audioCtx.createScriptProcessor(bufferSize, 1, 1);
+      processorRef.current = processor;
 
       processor.onaudioprocess = (e) => {
           // If the component unmounted, or recording stopped, we ignore
-          // Note: using refs for state inside event handlers
           if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording' && onRawAudioAvailable) {
               const inputData = e.inputBuffer.getChannelData(0); // Float32Array
-              // Send the raw PCM float32 array to the callback (which sends to websocket)
-              onRawAudioAvailable(inputData.buffer);
+              // Clone the buffer because the browser reuses the input buffer,
+              // and asynchronous sending (via websockets) can cause data corruption or crashes
+              const float32Array = new Float32Array(inputData);
+              onRawAudioAvailable(float32Array.buffer);
           }
       };
 
