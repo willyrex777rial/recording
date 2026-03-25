@@ -6,7 +6,7 @@ import Transcript from './components/Transcript';
 import Stats from './components/Stats';
 import ExportMenu from './components/ExportMenu';
 import { useAudioRecorder } from './hooks/useAudioRecorder';
-import { useSpeechRecognition } from './hooks/useSpeechRecognition';
+import { useWebSocketTranscription } from './hooks/useWebSocketTranscription';
 import { saveSession, getAllSessions, deleteSession } from './utils/storage';
 import { AlertCircle, Edit2, Check } from 'lucide-react';
 
@@ -29,6 +29,31 @@ function App() {
   };
 
   const {
+    transcript,
+    interimTranscript,
+    status,
+    isSupported,
+    error: speechError,
+    startListening,
+    stopListening,
+    pauseListening,
+    resumeListening,
+    sendAudioChunk,
+    setTranscript
+  } = useWebSocketTranscription(useCallback(() => {
+     // A slightly messy way to grab duration on the fly, but works for the ref
+     const el = document.getElementById('duration-ref');
+     return el ? parseInt(el.getAttribute('data-duration') || '0', 10) : 0;
+  }, []));
+
+  const handleAudioChunk = useCallback((blob) => {
+      // Send the audio blob to the websocket server
+      if (status !== 'Paused' && status !== 'Error' && status !== 'Idle') {
+          sendAudioChunk(blob);
+      }
+  }, [status, sendAudioChunk]);
+
+  const {
     isRecording,
     isPaused,
     duration,
@@ -43,25 +68,7 @@ function App() {
     setAudioURL,
     setAudioBlob,
     setDuration
-  } = useAudioRecorder();
-
-  const durationRef = useRef(duration);
-  useEffect(() => {
-    durationRef.current = duration;
-  }, [duration]);
-
-  const {
-    transcript,
-    interimTranscript,
-    isListening,
-    isSupported,
-    error: speechError,
-    startListening,
-    stopListening,
-    pauseListening,
-    resumeListening,
-    setTranscript
-  } = useSpeechRecognition(useCallback(() => durationRef.current, []));
+  } = useAudioRecorder(handleAudioChunk);
 
   // Sync Audio and Speech states
   const handleStart = useCallback(() => {
@@ -204,8 +211,8 @@ function App() {
           <AlertCircle className="h-12 w-12 text-destructive mx-auto mb-4" />
           <h2 className="text-xl font-bold text-foreground mb-2">Browser Not Supported</h2>
           <p className="text-muted-foreground">
-            VoiceLog Pro requires the Web Speech API for live transcription.
-            Please use <strong>Google Chrome</strong> or <strong>Microsoft Edge</strong> for the best experience.
+            VoiceLog Pro requires WebSockets for live transcription.
+            Please use a modern browser for the best experience.
           </p>
         </div>
       </div>
@@ -222,6 +229,7 @@ function App() {
       activeSessionId={activeSession?.id}
     >
       {/* Session Header */}
+      <div id="duration-ref" data-duration={duration} className="hidden" />
       <div className="flex flex-col sm:flex-row sm:items-center justify-between mb-6 gap-4 border-b border-border pb-4">
         <div className="flex items-center space-x-2">
           {isEditingName ? (
@@ -311,7 +319,19 @@ function App() {
         {/* Right Column: Transcript */}
         <div className="flex flex-col flex-1 w-full min-h-0">
           <div className="flex items-center justify-between mb-2">
-            <h3 className="text-lg font-semibold text-foreground">Transcript</h3>
+            <div className="flex items-center space-x-2">
+              <h3 className="text-lg font-semibold text-foreground">Transcript</h3>
+              {isRecording && (
+                <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${
+                  status === 'Transcribing' ? 'bg-primary/20 text-primary animate-pulse' :
+                  status === 'Listening' ? 'bg-secondary text-secondary-foreground' :
+                  status === 'Error' ? 'bg-destructive/20 text-destructive' :
+                  'bg-muted text-muted-foreground'
+                }`}>
+                  {status}
+                </span>
+              )}
+            </div>
             {!isRecording && transcript && (
               <span className="text-xs text-muted-foreground bg-secondary px-2 py-1 rounded-md">Editable</span>
             )}

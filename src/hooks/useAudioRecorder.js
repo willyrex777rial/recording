@@ -1,8 +1,8 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
 
-const CHUNK_INTERVAL = 5000; // Generate chunks every 5s
+const CHUNK_INTERVAL = 2000; // Legacy MediaRecorder chunk interval
 
-export const useAudioRecorder = () => {
+export const useAudioRecorder = (onRawAudioAvailable) => {
   const [isRecording, setIsRecording] = useState(false);
   const [isPaused, setIsPaused] = useState(false);
   const [duration, setDuration] = useState(0); // in seconds
@@ -25,23 +25,48 @@ export const useAudioRecorder = () => {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       streamRef.current = stream;
 
+      // 1. Setup MediaRecorder for saving the full WebM audio locally
       const mediaRecorder = new MediaRecorder(stream);
       mediaRecorderRef.current = mediaRecorder;
-
-      // Audio Context for Visualizer
-      const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-      const source = audioCtx.createMediaStreamSource(stream);
-      const analyser = audioCtx.createAnalyser();
-      analyser.fftSize = 256;
-      source.connect(analyser);
-      audioContextRef.current = audioCtx;
-      analyserRef.current = analyser;
 
       mediaRecorder.ondataavailable = (event) => {
         if (event.data.size > 0) {
           audioChunksRef.current.push(event.data);
         }
       };
+
+      // 2. Setup AudioContext and AudioWorklet for raw PCM streaming to WebSocket
+      const audioCtx = new (window.AudioContext || window.webkitAudioContext)({
+          sampleRate: 16000, // Force 16kHz for Whisper
+      });
+      audioContextRef.current = audioCtx;
+
+      const source = audioCtx.createMediaStreamSource(stream);
+
+      // Setup Analyser for Visualizer
+      const analyser = audioCtx.createAnalyser();
+      analyser.fftSize = 256;
+      source.connect(analyser);
+      analyserRef.current = analyser;
+
+      // Setup ScriptProcessor for raw audio extraction
+      // (ScriptProcessorNode is deprecated but AudioWorklet requires serving a separate JS file,
+      // which complicates simple local dev. ScriptProcessor is sufficient for this simple app).
+      const bufferSize = 4096;
+      const processor = audioCtx.createScriptProcessor(bufferSize, 1, 1);
+
+      processor.onaudioprocess = (e) => {
+          // If the component unmounted, or recording stopped, we ignore
+          // Note: using refs for state inside event handlers
+          if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording' && onRawAudioAvailable) {
+              const inputData = e.inputBuffer.getChannelData(0); // Float32Array
+              // Send the raw PCM float32 array to the callback (which sends to websocket)
+              onRawAudioAvailable(inputData.buffer);
+          }
+      };
+
+      source.connect(processor);
+      processor.connect(audioCtx.destination); // Required to make it process
 
       mediaRecorder.onstart = () => {
         setIsRecording(true);
